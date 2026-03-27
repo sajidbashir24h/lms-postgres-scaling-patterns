@@ -74,6 +74,8 @@ DECLARE
     v_user_count INTEGER := 12000;
     v_course_count INTEGER := 180;
 BEGIN
+    PERFORM setseed(0.5);
+
     -- Users: skew toward free tier, realistic country distribution, rolling signup dates.
     INSERT INTO lms_users (email_hash, country_code, plan_tier, is_active, created_at, last_active_date)
     SELECT

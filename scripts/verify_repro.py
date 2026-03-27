@@ -22,24 +22,32 @@ def run(cmd: list[str], check: bool = True) -> subprocess.CompletedProcess[str]:
 
 def wait_for_postgres(container_name: str, user: str, db: str, timeout_seconds: int) -> None:
     deadline = time.time() + timeout_seconds
+    consecutive_ok = 0
     while time.time() < deadline:
         probe = subprocess.run(
             [
                 "docker",
                 "exec",
                 container_name,
-                "pg_isready",
+                "psql",
                 "-U",
                 user,
                 "-d",
                 db,
+                "-c",
+                "SELECT 1;",
             ],
             text=True,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
         if probe.returncode == 0:
-            return
+            consecutive_ok += 1
+            if consecutive_ok >= 2:
+                return
+            time.sleep(1)
+            continue
+        consecutive_ok = 0
         time.sleep(1)
     raise RuntimeError("PostgreSQL container did not become ready before timeout.")
 

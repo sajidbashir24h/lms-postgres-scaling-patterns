@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import json
+import os
 import random
 import re
 import sys
@@ -24,7 +25,10 @@ import psycopg2
 import seaborn as sns
 from psycopg2.extensions import connection as PgConnection
 
-DEFAULT_DSN = "postgresql://postgres:postgres@localhost:5432/lms_db"
+DEFAULT_DSN = os.getenv(
+    "DATABASE_URL",
+    "postgresql://postgres:postgres@localhost:5432/lms_db",
+)
 
 EXPLAIN_EXECUTION_RE = re.compile(r"Execution Time:\s*([0-9]+(?:\.[0-9]+)?)\s*ms")
 

@@ -6,6 +6,26 @@ A real-world case study on reducing I/O bottlenecks, lock contention, and memory
 
 ---
 
+## NDA & Privacy Disclaimer
+
+This repository is a public engineering case study built with synthetic datasets, anonymized identifiers, and representative metrics. It does not include proprietary schemas, customer data, internal source code, production credentials, or confidential business logic from any employer or client. All entities, payloads, and benchmark outputs are intentionally fabricated to preserve technical realism without exposing regulated or sensitive information.
+
+## The Background: Prototype to Production
+
+The LMS started as a straightforward web prototype: one backend process, one PostgreSQL instance, and a narrow user path. That architecture was acceptable while request volume was low and usage patterns were predictable.
+
+The failure mode appeared during production expansion. Once mobile clients were introduced, the backend was split into API services for iOS and Android traffic, and previously local computation became distributed computation. The system inherited more network hops, more serialization boundaries, and more duplicated read workloads. Query patterns that were tolerable in a monolith became expensive when repeated across multiple services and workers.
+
+## The Problem: Data Gravity
+
+The dominant bottleneck was not a single slow query; it was data movement. Services were extracting large row sets from PostgreSQL into Node.js/Python, then performing validation, aggregation, and ranking in application memory. That design drove heap growth, higher garbage collection pressure, and unnecessary network transfer of intermediate data.
+
+The thesis for this work is simple and enforced throughout the benchmarks: **"We fixed this by pushing heavy logic down to the PostgreSQL execution engine."**
+
+The outcome was lower memory pressure in API processes, reduced network payload size, and more stable tail latency under concurrent traffic.
+
+---
+
 ## Reproducible Verification Runbook
 
 **One-command reproducibility:**
@@ -36,6 +56,20 @@ bash scripts/verify_repro.sh
 ```bash
 python scripts/verify_repro.py --keep-container --port 5434
 ```
+
+## 🔬 Interactive Exploration (Jupyter Notebook)
+
+If you prefer to step through the SQL optimizations interactively, read the educational markdown, and see the charts render inline, use the included Jupyter Notebook.
+
+Ensure your PostgreSQL container is running: `docker-compose up -d`
+
+Activate your virtual environment and install dependencies: `pip install -r requirements.txt`
+
+Launch the Jupyter environment: `jupyter lab`
+
+Open `lms_optimization_walkthrough.ipynb` and execute the cells sequentially.
+
+Note: This notebook is fully compatible with Kaggle and Google Colab, provided you update the `DATABASE_URL` environment variable to point to an accessible PostgreSQL 15+ instance.
 
 ---
 
@@ -85,6 +119,30 @@ erDiagram
         timestamptz captured_at
         timestamptz converted_at
     }
+```
+
+## 📁 Repository Structure
+
+```text
+lms-postgres-scaling-patterns/
+├── README.md                           # This case study and benchmark report
+├── docker-compose.yml                  # PostgreSQL 15 isolated environment
+├── requirements.txt                    # Python dependencies
+├── .env.example                        # Template for database credentials
+├── lms_optimization_walkthrough.ipynb  # Interactive Jupyter/Kaggle notebook
+├── docs/
+│   ├── latency_comparison.png          # Auto-generated performance chart
+│   └── live_benchmark_results.md       # Auto-generated latency tables
+├── scripts/
+│   ├── verify_repro.py                 # Cross-platform automated Docker test suite
+│   ├── verify_repro.sh                 # Linux/macOS wrapper
+│   ├── verify_repro.ps1                # Windows PowerShell wrapper
+│   └── run_lms_benchmarks.py           # Core benchmark execution and charting logic
+└── src/
+    ├── 00_schema_and_synthetic_data.sql # DDL and deterministic data generator
+    ├── 01_cursor_aggregation.sql        # Optimization 1: PL/pgSQL Cursors
+    ├── 02_bulk_ingestion_triggers.sql   # Optimization 2: Transition Tables
+    └── 03_analytics_views_and_recursion.sql # Optimization 3 & 4: Views & CTEs
 ```
 
 ---
@@ -714,5 +772,50 @@ Migration results over three months:
 - [PostgreSQL 15 Documentation: Materialized Views](https://www.postgresql.org/docs/15/sql-creatematerializedview.html)
 - [PostgreSQL 15 Documentation: WITH (Common Table Expressions)](https://www.postgresql.org/docs/15/queries-with.html)
 - [PostgreSQL 15 Documentation: EXPLAIN](https://www.postgresql.org/docs/15/sql-explain.html)
+
+---
+
+## Reproducibility & Usability
+
+Use Docker and the included verifier script from the repository root:
+
+```bash
+python scripts/verify_repro.py
+```
+
+What this command does:
+- starts an isolated PostgreSQL 15 container,
+- initializes schema and synthetic data,
+- runs benchmark workloads with strict Benchmark A semantics,
+- writes artifacts to `docs/live_benchmark_results.md` and `docs/latency_comparison.png`.
+
+Optional wrappers:
+- Linux/macOS: `bash scripts/verify_repro.sh`
+- Windows PowerShell: `./scripts/verify_repro.ps1`
+
+Prerequisites:
+- Docker installed and running,
+- Python 3.9+,
+- project dependencies installed from `requirements.txt`.
+
+## Future Improvements
+
+Planned extensions for the next iteration:
+- Part 2: Declarative table partitioning for billion-row activity logs.
+- JSONB indexing strategy for high-volume telemetry attributes.
+- Comparative benchmark matrix for BRIN vs BTREE under append-heavy workloads.
+- Repeatable CI execution profile for cross-platform benchmark verification.
+
+## Contributing
+
+Contributions are welcome. If you want to extend this case study:
+- fork the repository,
+- add a new benchmark scenario (SQL + runner integration + expected outputs),
+- include reproducibility notes and performance interpretation,
+- open a Pull Request with a clear before/after methodology.
+
+Please keep contributions deterministic, benchmarkable, and grounded in PostgreSQL execution evidence (`EXPLAIN ANALYZE`, buffers, and latency artifacts).
+
+This project is released under the MIT License. See `LICENSE` for details.
 
 
