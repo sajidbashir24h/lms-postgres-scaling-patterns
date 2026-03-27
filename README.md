@@ -4,6 +4,13 @@ A real-world case study on reducing I/O bottlenecks, lock contention, and memory
 
 **Audience:** Database engineers, backend architects, and anyone shipping data-heavy systems on PostgreSQL.
 
+## Technologies & Core Patterns
+
+- **Database & Languages:** PostgreSQL 15, PL/pgSQL, PHP, Laravel (Eloquent ORM), Python 3.9, SQL
+- **Architecture Patterns:** Data Gravity, Query Optimization, Transaction Management, Batch Processing, Decoupled API
+- **PostgreSQL Features:** Materialized Views, Concurrent Refresh, Statement-Level Triggers, Transition Tables, Recursive CTEs (Common Table Expressions), Database Cursors, HashAggregates
+- **DevOps & Tooling:** Docker, Docker Compose, Jupyter Notebooks, psycopg2, Data Visualization
+
 ---
 
 ## NDA & Privacy Disclaimer
@@ -18,7 +25,7 @@ The failure mode appeared during production expansion. Once mobile clients were 
 
 ## The Problem: Data Gravity
 
-The dominant bottleneck was not a single slow query; it was data movement. Services were extracting large row sets from PostgreSQL into Node.js/Python, then performing validation, aggregation, and ranking in application memory. That design drove heap growth, higher garbage collection pressure, and unnecessary network transfer of intermediate data.
+The dominant bottleneck was not a single slow query; it was data movement. Our Laravel API services were pulling massive datasets from PostgreSQL, hydrating thousands of Eloquent models into PHP memory, and recomputing aggregations that should have stayed in the database. Monthly lead reports required 12 sequential queries. Daily streak calculations relied on heavy Laravel Collection loops scanning entire user histories in-process. The closer you examined the code, the more obvious the pattern: data was being dragged across the network to choke the PHP workers.
 
 The thesis for this work is simple and enforced throughout the benchmarks: **"We fixed this by pushing heavy logic down to the PostgreSQL execution engine."**
 
@@ -77,47 +84,47 @@ Note: This notebook is fully compatible with Kaggle and Google Colab, provided y
 
 ```mermaid
 erDiagram
-    LMS_USERS ||--o{ COURSE_ENROLLMENTS : "enrolls in"
-    LMS_USERS ||--o{ DAILY_ACTIVITY_LOGS : "generates"
-    LMS_USERS ||--o{ NEWSLETTER_LEADS : "converts from"
+    LMS_USERS ||--o{ COURSE_ENROLLMENTS : enrolls
+    LMS_USERS ||--o{ DAILY_ACTIVITY_LOGS : generates
+    LMS_USERS ||--o{ NEWSLETTER_LEADS : converts
     
     LMS_USERS {
-        uuid user_id PK
-        text email_hash UK
-        char country_code
-        text plan_tier
-        boolean is_active
-        timestamptz created_at
-        date last_active_date
+        UUID user_id PK
+        TEXT email_hash UK
+        CHAR country_code
+        TEXT plan_tier
+        BOOLEAN is_active
+        TIMESTAMP created_at
+        DATE last_active_date
     }
     
     COURSE_ENROLLMENTS {
-        bigserial enrollment_id PK
-        uuid user_id FK
-        bigint course_id
-        timestamptz enrolled_at
-        timestamptz completed_at
-        numeric progress_pct
-        text source_channel
+        BIGINT enrollment_id PK
+        UUID user_id FK
+        BIGINT course_id
+        TIMESTAMP enrolled_at
+        TIMESTAMP completed_at
+        DECIMAL progress_pct
+        TEXT source_channel
     }
     
     DAILY_ACTIVITY_LOGS {
-        bigserial activity_id PK
-        uuid user_id FK
-        date activity_date
-        integer minutes_learned
-        integer lessons_completed
-        timestamptz created_at
+        BIGINT activity_id PK
+        UUID user_id FK
+        DATE activity_date
+        INT minutes_learned
+        INT lessons_completed
+        TIMESTAMP created_at
     }
     
     NEWSLETTER_LEADS {
-        bigserial lead_id PK
-        text email_hash
-        uuid user_id FK
-        text acquisition_channel
-        text campaign_code
-        timestamptz captured_at
-        timestamptz converted_at
+        BIGINT lead_id PK
+        TEXT email_hash
+        UUID user_id FK
+        TEXT acquisition_channel
+        TEXT campaign_code
+        TIMESTAMP captured_at
+        TIMESTAMP converted_at
     }
 ```
 
@@ -161,25 +168,28 @@ The fix applied a basic systems principle: when the output is small and the inpu
 
 ### The Problem
 
-Monthly lead reports were computed in the application tier. The "natural" implementation looped through the last 12 months and executed one query per month. Here is the naive pattern in Python:
+Monthly lead reports were computed in the application tier. The "natural" implementation looped through the last 12 months and executed one query per month. Here is the naive Laravel/Eloquent pattern:
 
-```python
-# Application code (Node.js, Python, Ruby—all equally bad)
-months = []
-end_month = datetime.now().replace(day=1)
-for i in range(12):
-    month_start = (end_month - timedelta(days=30*i)).replace(day=1)
-    month_end = (month_start + timedelta(days=32)).replace(day=1)
-    
-    result = db.query("""
-        SELECT COUNT(*) as total_leads, COUNT(DISTINCT user_id) as converted
-        FROM newsletter_leads
-        WHERE captured_at >= %s AND captured_at < %s
-    """, (month_start, month_end))
-    
-    months.append(result)
+```php
+// Naive Laravel/Eloquent Approach (The Bottleneck)
+$months = [];
+$endMonth = Carbon::now()->startOfMonth();
 
-return months
+for ($i = 0; $i < 12; $i++) {
+    $monthStart = (clone $endMonth)->subMonths($i)->startOfMonth();
+    $monthEnd = (clone $monthStart)->addMonth()->startOfMonth();
+
+    // Executes 12 separate queries, dragging rows into PHP memory
+    $leads = NewsletterLead::where('captured_at', '>=', $monthStart)
+                           ->where('captured_at', '<', $monthEnd)
+                           ->get();
+
+    $months[] = [
+        'total_leads' => $leads->count(),
+        'converted' => $leads->whereNotNull('user_id')->unique('user_id')->count()
+    ];
+}
+return response()->json($months);
 ```
 
 Each iteration executed a separate query, pulled overlapping ranges of raw row data across the network, and buffered results in application memory. At 18K leads per month, this meant ~216K+ rows being transferred and deserialized just to compute 12 aggregate numbers. Worse, concurrent requests from multiple API endpoints caused thundering herd behavior: dozens of processes pulling the same 12 months from disk and cache simultaneously.
@@ -596,36 +606,17 @@ Execution Time: 0.412 ms
 
 ### The Problem
 
-The leaderboard ranked users by longest consecutive learning streak. The naive approach pulled full activity histories to application memory:
+The leaderboard ranked users by longest consecutive learning streak. The naive Laravel approach pulled full activity histories into PHP memory:
 
-```python
-# Naive: Exports 500K rows to client for computation
-rows = db.query("""
-    SELECT user_id, activity_date FROM daily_activity_logs
-    WHERE activity_date >= NOW() - INTERVAL '365 days'
-    ORDER BY user_id, activity_date
-""")
+```php
+// Naive: Exports 500K rows to PHP memory for computation
+$activity = DailyActivityLog::where('activity_date', '>=', now()->subDays(365))->get();
+$grouped = $activity->groupBy('user_id');
 
-grouped = {}
-for row in rows:
-    if row['user_id'] not in grouped:
-        grouped[row['user_id']] = []
-    grouped[row['user_id']].append(row['activity_date'])
-
-streaks = {}
-for user_id, dates in grouped.items():
-    max_streak = 1
-    current_streak = 1
-    for i in range(1, len(dates)):
-        if (dates[i] - dates[i-1]).days == 1:
-            current_streak += 1
-        else:
-            max_streak = max(max_streak, current_streak)
-            current_streak = 1
-    max_streak = max(max_streak, current_streak)
-    streaks[user_id] = max_streak
-
-return streaks
+$longestStreaks = $grouped->map(function ($logs) {
+    // Heavy PHP array traversal in application memory
+    return calculateConsecutiveDays($logs);
+});
 ```
 
 This pulled 500K+ rows across the network just to compute ~10K streak values. Memory overhead, nested loops, and latency summed to 5-8 seconds per request.
@@ -772,31 +763,6 @@ Migration results over three months:
 - [PostgreSQL 15 Documentation: Materialized Views](https://www.postgresql.org/docs/15/sql-creatematerializedview.html)
 - [PostgreSQL 15 Documentation: WITH (Common Table Expressions)](https://www.postgresql.org/docs/15/queries-with.html)
 - [PostgreSQL 15 Documentation: EXPLAIN](https://www.postgresql.org/docs/15/sql-explain.html)
-
----
-
-## Reproducibility & Usability
-
-Use Docker and the included verifier script from the repository root:
-
-```bash
-python scripts/verify_repro.py
-```
-
-What this command does:
-- starts an isolated PostgreSQL 15 container,
-- initializes schema and synthetic data,
-- runs benchmark workloads with strict Benchmark A semantics,
-- writes artifacts to `docs/live_benchmark_results.md` and `docs/latency_comparison.png`.
-
-Optional wrappers:
-- Linux/macOS: `bash scripts/verify_repro.sh`
-- Windows PowerShell: `./scripts/verify_repro.ps1`
-
-Prerequisites:
-- Docker installed and running,
-- Python 3.9+,
-- project dependencies installed from `requirements.txt`.
 
 ## Future Improvements
 
