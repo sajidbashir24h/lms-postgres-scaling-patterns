@@ -38,3 +38,6 @@ dist/
 .DS_Store
 Thumbs.db
 Desktop.ini
+
+# Local dataset exports
+kaggle_dataset/

@@ -25,10 +25,7 @@ import psycopg2
 import seaborn as sns
 from psycopg2.extensions import connection as PgConnection
 
-DEFAULT_DSN = os.getenv(
-    "DATABASE_URL",
-    "postgresql://postgres:postgres@localhost:5432/lms_db",
-)
+DEFAULT_DSN = os.getenv("DATABASE_URL")
 
 EXPLAIN_EXECUTION_RE = re.compile(r"Execution Time:\s*([0-9]+(?:\.[0-9]+)?)\s*ms")
 
@@ -634,6 +631,13 @@ def parse_args() -> argparse.Namespace:
 def main() -> int:
     """Entry point."""
     args = parse_args()
+    if not args.dsn:
+        print(
+            "ERROR: Missing database connection string. "
+            "Set DATABASE_URL or pass --dsn.",
+            file=sys.stderr,
+        )
+        return 1
     random.seed(42)
     return run_benchmarks(
         args.dsn,
