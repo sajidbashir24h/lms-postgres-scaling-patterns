@@ -84,10 +84,10 @@ Note: This notebook is fully compatible with Kaggle and Google Colab, provided y
 
 This notebook is designed as a standalone playground that runs in both local and Kaggle cloud environments.
 
-**Published Kaggle links (replace placeholders after publish):**
+**Published Kaggle links:**
 
-- Kaggle Notebook: https://www.kaggle.com/code/<your-kaggle-username>/lms-postgres-scaling-playground
-- Kaggle Dataset: https://www.kaggle.com/datasets/<your-kaggle-username>/lms-postgres-scaling-dataset
+- Kaggle Notebook: https://www.kaggle.com/code/sajidbashir24h/lms-postgresql-optimization-walkthrough
+- Kaggle Dataset: https://www.kaggle.com/datasets/sajidbashir24h/saas-lms-telemetry-and-activity-logs
 
 - **Local mode:** loads `DATABASE_URL` from `.env` (or falls back to localhost defaults for quick testing).
 - **Kaggle mode:** loads `DATABASE_URL` from Kaggle Secrets, so no credentials are hardcoded in notebook cells.
