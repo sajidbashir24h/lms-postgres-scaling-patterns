@@ -41,6 +41,8 @@ The outcome was lower memory pressure in API processes, reduced network payload 
 python scripts/verify_repro.py
 ```
 
+For standalone script runs (outside `verify_repro.py`), provide a connection string via `DATABASE_URL` or `--dsn`.
+
 This launches an isolated PostgreSQL 15 container, runs benchmarks with strict Benchmark A semantics, and outputs results to `docs/live_benchmark_results.md` and `docs/latency_comparison.png`.
 
 **Alternative entry points:**
@@ -77,6 +79,40 @@ Launch the Jupyter environment: `jupyter lab`
 Open `lms_optimization_walkthrough.ipynb` and execute the cells sequentially.
 
 Note: This notebook is fully compatible with Kaggle and Google Colab, provided you update the `DATABASE_URL` environment variable to point to an accessible PostgreSQL 15+ instance.
+
+## ☁️ Kaggle Cloud Playground
+
+This notebook is designed as a standalone playground that runs in both local and Kaggle cloud environments.
+
+**Published Kaggle links (replace placeholders after publish):**
+
+- Kaggle Notebook: https://www.kaggle.com/code/<your-kaggle-username>/lms-postgres-scaling-playground
+- Kaggle Dataset: https://www.kaggle.com/datasets/<your-kaggle-username>/lms-postgres-scaling-dataset
+
+- **Local mode:** loads `DATABASE_URL` from `.env` (or falls back to localhost defaults for quick testing).
+- **Kaggle mode:** loads `DATABASE_URL` from Kaggle Secrets, so no credentials are hardcoded in notebook cells.
+
+You can sync this repository directly from GitHub to Kaggle, paste a free Neon.tech or Supabase PostgreSQL URL into a `DATABASE_URL` secret, and execute the full benchmark workflow interactively.
+
+The setup phase also supports two seed modes so you can choose startup strategy:
+
+- `DATA_SEED_METHOD='generate'` to create synthetic data from SQL source files.
+- `DATA_SEED_METHOD='dump'` to load a prepared snapshot from `kaggle_dataset/lms_dump.sql`.
+
+To build that dump locally from Docker PostgreSQL:
+
+```bash
+docker exec -i lms_pg15_bench pg_dump -U postgres -d lms_db -n lms_benchmark --no-owner --no-privileges --clean --if-exists > kaggle_dataset/lms_dump.sql
+```
+
+## 📊 Dataset Alternative Use Cases
+
+The LMS dataset bundle (`lms_users`, `course_enrollments`, `daily_activity_logs`, `newsletter_leads`) is intentionally useful beyond this scaling case study.
+
+1. **dbt ELT Portfolio Project:** Build staging, intermediate, and mart layers, add schema tests, and ship a production-style transformation DAG.
+2. **Churn and Engagement Modeling:** Engineer behavioral features for scikit-learn/XGBoost classification to predict retention risk and learning drop-off.
+3. **BI Analytics Product:** Build Tableau or Power BI dashboards for funnel conversion, cohort retention, and course completion trends.
+4. **Lifecycle Segmentation Workflows:** Create reusable SQL segments for CRM activation, lead scoring, and re-engagement campaign targeting.
 
 ---
 
@@ -144,7 +180,8 @@ lms-postgres-scaling-patterns/
 │   ├── verify_repro.py                 # Cross-platform automated Docker test suite
 │   ├── verify_repro.sh                 # Linux/macOS wrapper
 │   ├── verify_repro.ps1                # Windows PowerShell wrapper
-│   └── run_lms_benchmarks.py           # Core benchmark execution and charting logic
+│   ├── run_lms_benchmarks.py           # Core benchmark execution and charting logic
+│   └── export_kaggle_dataset.py        # Export lms_benchmark tables to Kaggle-ready CSVs
 └── src/
     ├── 00_schema_and_synthetic_data.sql # DDL and deterministic data generator
     ├── 01_cursor_aggregation.sql        # Optimization 1: PL/pgSQL Cursors
@@ -156,7 +193,7 @@ lms-postgres-scaling-patterns/
 
 ## Data Gravity: The Fundamental Constraint
 
-Two years into operating an LMS at scale, the platform faced a wall. The architecture began life as a monolithic Python web application: all reads, writes, and business logic executed in a single process. When product demanded mobile parity via a REST API, the team decoupled the backend into modular services. The result was measurable and compounding network overhead that worsened predictably with load.
+Two years into operating an LMS at scale, the platform faced a wall. The architecture began life as a monolithic Laravel web application: all reads, writes, and business logic executed in a single PHP process. When product demanded mobile parity via a REST API, the team decoupled the backend into modular services. The result was measurable and compounding network overhead that worsened predictably with load.
 
 API services were pulling unfiltered, raw datasets from PostgreSQL, materializing them into application objects, recomputing aggregations that should have stayed in the database, then serializing results back to clients. Monthly lead reports required 12 sequential queries. Daily streak calculations scanned entire user histories in process memory. Dashboard reads triggered repeated full-table scans competing with writes. The closer you examined the code, the more obvious the pattern: data was being moved across the network and CPU to wrong places at the wrong times.
 
@@ -168,7 +205,13 @@ The fix applied a basic systems principle: when the output is small and the inpu
 
 ### The Problem
 
-Monthly lead reports were computed in the application tier. The "natural" implementation looped through the last 12 months and executed one query per month. Here is the naive Laravel/Eloquent pattern:
+**Business Problem (Marketing & Growth):**
+The marketing team needed a rolling 12-month acquisition report. The Laravel application was pulling and deserializing 216K+ raw lead rows across the network to compute monthly metrics in PHP, creating memory pressure and unstable response times under concurrent usage.
+
+**Data Question:**
+"For the past 12 months, what is the month-by-month breakdown of total leads captured, unique converted users, and conversion rate percentage?"
+
+The "natural" implementation looped through the last 12 months and executed one query per month. Here is the naive Laravel/Eloquent pattern:
 
 ```php
 // Naive Laravel/Eloquent Approach (The Bottleneck)
@@ -328,7 +371,13 @@ DETAILS:
 
 ### The Problem
 
-Daily activity ingestion came from mobile clients: 5,000+ rows per API call. The naive implementation attached row-level triggers validating each row individually:
+**Business Problem (Operational Stability & Mobile Sync):**
+Mobile apps synced offline learning activity in bursts of 5,000+ events. Row-level trigger validation executed once per row, multiplying CPU and lock work by 5,000 and causing lock contention on hot user records during concurrent ingest.
+
+**Data Question:**
+"How can we insert 5,000 activity logs, validate integrity constraints (including no future dates), and update each user's last active date in one conflict-resistant transaction?"
+
+The naive implementation attached row-level triggers validating each row individually:
 
 ```sql
 -- Naive: Row-level trigger, fired 5,000 times per batch
@@ -478,6 +527,12 @@ Memory Usage: 8240kB (on database server)
 
 ### The Problem
 
+**Business Problem (Client Dashboarding):**
+A custom client dashboard executed heavy window-function ranking directly on live operational tables. During peak traffic, this caused ~4 second page loads and resource contention that interfered with write throughput from mobile ingestion APIs.
+
+**Data Question:**
+"What is the monthly engagement rank, total minutes learned, and active-day count for each user, ordered from highest to lowest engagement?"
+
 The dashboard computed user engagement rankings per month by joining `daily_activity_logs` with `lms_users` and applying window functions on every page load:
 
 ```sql
@@ -606,7 +661,13 @@ Execution Time: 0.412 ms
 
 ### The Problem
 
-The leaderboard ranked users by longest consecutive learning streak. The naive Laravel approach pulled full activity histories into PHP memory:
+**Business Problem (Gamification & Retention):**
+To support retention programs, the product team required a longest-streak leaderboard. The Laravel layer exported 500K+ activity rows into PHP arrays to compute adjacency logic, producing 5-8 second latencies and poor scalability.
+
+**Data Question:**
+"What is the maximum number of consecutive learning days (longest streak) for each active user over the past 365 days?"
+
+The naive Laravel approach pulled full activity histories into PHP memory:
 
 ```php
 // Naive: Exports 500K rows to PHP memory for computation
@@ -737,7 +798,7 @@ Execution Time: 5346.123 ms (no data transfer latency)
 **Key Observations:**
 - Recursive CTE walked 402K adjacencies inside planner/executor (not in application memory).
 - Data transfer: 10K rows (one per user) vs. 342K rows (all activity dates).
-- Memory overhead: 256kB on-server vs. ~40MB deserialized in Python.
+- Memory overhead: 256kB on-server vs. ~40MB deserialized in PHP memory.
 
 ---
 
